@@ -1,0 +1,843 @@
+---
+title: "A Model to Identify Risky Loans"
+author: "Emilia Iacob"
+date: "March 8, 2023"
+output: 
+  pdf_document:
+    toc: TRUE
+    toc_depth: 3
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\newpage
+
+
+# Introduction
+
+This is a report that describes the steps taken to develop a prediction model capable of identifying risky bank loans.  This model uses a cleaner version of the german credit dataset donated to the UCI Machine Learning Repository by Hans Hofmann from the University of Hamburg. The original dataset can be found on the [UCI Machine Learning Repository]  (https://archive.ics.uci.edu/ml/datasets/statlog+(german+credit+data). The cleaner version of the german credit dataset used in this report  is available thanks to Brett Lantz and his book "Machine Learning with R - Expert techniques for predictive modeling", 3rd edition, Packt Publishing - see the References section below.
+
+The dataset contains information about 1000 loans, along with demographics about their corresponding loan applicants, the size, purpose and period of the loan and if those loans eventually went into default or no.  
+
+The method that we'll use to judge how well our algorithm is able to predict default loans will be the overall accuracy and sensitivity (i.e. the percentage of defaulted loans that have been correctly predicted as default). These measures will be applied on a test set - a dataset the we have not used when building our algorithm but for which we already know the actual default status of the loans.
+
+The approach used to build our prediction algorithm takes into account a few steps:
+- first we split our credit data into a train dataset (90% of the data) and a final holdout test set (remaining 10% of the data).  
+- we further split our train dataset into training and testing datasets to be able to train and test our algorithms. 
+- next we use 2 implementations of the decision tree algorithms: C5.0 and Random Forests. Unlike other classification machine learning algorithms which are like black boxes (i.e. hard to understand the way classification decisions have been made) the advantage of using decision trees is that the results are easy to read in plain language. Initially we will use the default parameters of each algorithm and later we will use cross-validation to tune and pick the parameters that give us the highest accuracy and sensitivity.  
+- in the end we compare the algorithms and we choose the best one to test on the final holdout test set.
+
+The objective will be to build a predictive model that would give us over 75% accuracy and the highest possible sensitivity meaning that we would be able to correctly predict the highest number of loans that have defaulted.
+
+
+
+\newpage
+# Analysis  
+
+
+## Step 1: Collecting and preparing the data  
+
+
+
+On [*Kaggle*] (https://www.kaggle.com/datasets/uciml/german-credit/download?datasetVersionNumber=1) there is a clean version of the german dataset but it only has 9 attributes. We are going to use instead the clean version that has 16 attributes that has been made available by Brett Lantz in  his book "Machine Learning with R - Expert techniques for predictive modeling", 3rd edition, Packt Publishing - see the *References* section below.
+
+
+Let's first call the packages that we are going to use in this analysis:  
+
+```{r message=FALSE, warning=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(C50)) install.packages("C50", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(GGally)) install.packages("GGally", repos = "http://cran.us.r-project.org")
+if(!require(gmodels)) install.packages("gmodels", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(C50)
+library(randomForest)
+library(data.table)
+library(dplyr)
+library (knitr)
+library (GGally)
+library(gmodels)
+```
+
+
+Now we can start downloading the file like this:  
+
+```{r eval = FALSE}
+dl <- "credit.csv"
+if(!file.exists(dl))
+  download.file(https://raw.githubusercontent.com/emilia-iacob/LoanRisk/main/credit.csv", dl)
+```
+
+Let's create the *credit* object:  
+
+```{r eval = FALSE}
+credit <- read.csv("credit.csv", stringsAsFactors = TRUE)
+```
+
+If we want to save the credit object for using it later we can do it like this:  
+
+```{r eval = FALSE}
+save(credit, file = "credit.rda")
+```
+
+To load the file when opening a new session:  
+
+```{r }
+load("credit.rda")
+```
+
+Let's now create the train dataset (*credit_main*) on which we will train and test our algorithms and  will be 90% of the credit data set and let's also create the final holdout test set (*credit_final_holdout_set*) which will be the remaining 10% of the credit data set and will be used to evaluate the performance of our final algorithm:  
+```{r eval = FALSE}
+set.seed (123, sample.kind = "Rounding")
+test_index <- createDataPartition(y=credit$default, times = 1, p = 0.1, list = FALSE)
+credit_main <- credit [-test_index,]
+credit_final_holdout_test <- credit [test_index,]
+```
+
+Now that we have created the train dataset (aka *credit_main*) we'll split it further into a train and test dataset with 90% and 10% of the *credit_main* dataset respectively:  
+```{r eval = FALSE}
+set.seed(123, sample.kind = "Rounding")
+main_test_index <- createDataPartition( y= credit_main$default, times = 1, p = 0.1, list = FALSE)
+credit_main_train <- credit_main [-main_test_index,]
+credit_main_test <- credit_main [main_test_index,]
+```
+
+
+To save the resulting files (*credit_main*, *credit_main_test*, *credit_main_train* and *final_holdout_test*) for future use we'll do the following:
+
+```{r eval = FALSE}
+save(credit_main, file = "credit_main.rda")
+save(credit_final_holdout_test, file = "credit_final_holdout_test.rda")
+save(credit_main_train, file = "credit_main_train.rda")
+save(credit_main_test, file = "credit_main_test.rda")
+```
+
+To quickly load the saved *edx* and *final_holdout_test* files and go to the next steps of this analysis we can use the load function:
+
+```{r}
+load("credit_main.rda")
+load("credit_main_train.rda")
+load("credit_main_test.rda")
+load("credit_final_holdout_test.rda")
+```
+
+
+
+
+\newpage
+
+## Step 2: Exploring the credit dataset  
+
+
+
+Let's first do some exploratory data analysis on the *credit* dataset to better understand the challenge that we have ahead.  
+
+First, let's see how many observations and variables we have in our *credit* dataset:  
+
+```{r}
+dim(credit)
+```
+
+Next let's see the type of data we have in the *credit* dataset:  
+```{r}
+str(credit)
+```
+
+We see that *checking_balance* and *savings_balance* are all factors.  
+
+Let's now see how many of the loans in the *credit* dataset have defaulted:  
+```{r default-distribution}
+table(credit$default)
+```
+
+So 30% of the loans that we have in our dataset have defaulted.
+
+Let's now see the distribution of the checking balance in percentages: 
+
+```{r}
+prop.table(table(credit$checking_balance))*100 
+```
+
+We can see that only 6% of the applicants for a loan had a checking balance over 200 DM which was the German currency at the time, before Germany adhered to the European Union. However, in almost 40% of the cases we don't have any information about *checking_balance*.  
+
+\newpage  
+
+Let's now explore the distribution of the same checking balance by default status:  
+
+```{r checking-balance-by-default-status, fig.cap= "Distribution of checking balance by loan default status"}
+credit %>% ggplot(aes(x=checking_balance, fill = default)) +
+  geom_bar(position = "dodge") +
+  ggtitle ("Checking balance distribution by loan default status")
+```
+  
+    
+    
+As we are already expecting, we notice that the default status is the lowest for those applicants with the highest checking balance (over 200 DM). However, it is surprising to see that even among the applicants for which we don't have any information about their checking balance the default status is low. 
+
+Let's see a similar view for the savings balance:  
+
+```{r savings-balance-by-default-status, fig.cap= "Distribution of savings balance by loan default status"}
+credit %>% ggplot(aes(x=savings_balance, fill = default)) +
+  geom_bar(position = "dodge")+
+  ggtitle("Savings balance distribution by loan default status")
+```
+  
+  
+
+Here again, we see that those applicants with a savings balance over 500 DM have the lowest default rate compared to the applicants in other savings balance categories.
+  
+  
+Let's now look at the loan distribution by purpose:  
+
+```{r distribution-by-purpose-and-default-status, fig.cap= "Loan distribution by purpose and default status"}
+credit %>% ggplot(aes(x=purpose, fill = default)) +
+  geom_bar()+
+  facet_grid(rows = vars(default)) +
+  ggtitle("Distribution by loan purpose and default status")
+```
+  
+  
+Let's see the distribution by credit history:  
+
+```{r distribution-by-credit-history-and-default, fig.cap = "Loan distribution by credit history and default status"}
+credit %>% ggplot(aes(x=credit_history, fill = default)) +
+  geom_bar(position = "dodge") +
+  ggtitle("Loan Distribution by credit history and default status")
+```
+
+
+Here it's interesting to see that those applicants having a very good or perfect credit history actually default more than the applicants in any other category. We also notice that the number of loans given to applicants with good and critical credit history is disproportionally higher than the loans given to applicants in other categories. This may also be because people with good credit history tend to have a better money discipline and may not apply to loans in the first place. 
+
+
+Let's now look at the same distribution of credit history by default status with the CrossTable function from the gmodels package. The CrossTable function also offers the calculation for Pearson's chi-squared test for independence between 2 variables. This test tells us how likely it is that the difference in cell counts in the table is due to chance alone. The lower the chi-squared values
+the higher the evidence that there is an association between the 2 variables.  
+
+```{r}
+prop.table(table(credit$credit_history, credit$default))
+CrossTable(x=credit$default, y= credit$credit_history, chisq = TRUE)
+```
+Here we see that the p value is less than 0.05 which means that we can reject the null hypothesis meaning that it's very likely that the variation in cell count for the 2 variables might not be due to chance. 
+
+Let's now look at the numeric variables in the *credit* dataset and create a correlogram with ggpairs:  
+```{r message=FALSE, warning=FALSE, fig.cap="Correlogram for numerical variables"  , fig.height=15,  fig.width=20}
+credit_1 <- credit %>% select(default, months_loan_duration, amount,
+                              percent_of_income, age, existing_loans_count)
+ggpairs(credit_1, ggplot2::aes(colour= default))
+```
+
+Here we see that the only significant correlation is between the duration of a loan and its amount which is expected since usually the higher the loan amount the longer it may take to repay it.
+
+Let's see the distribution of the amount of loan based on default status:  
+
+```{r amount-distribution-by-default-status, fig.cap = "Loan amount distribution by default status"}
+credit %>% ggplot(aes(x= default, y= amount, fill = default)) + 
+  geom_boxplot() +
+  ggtitle("Distribution of loan amount based on default status")
+```
+
+We can see that there is no significant difference between the average amount of a loan that defaulted versus a loan that has been paid out:  
+
+- loans defaulted:  
+
+```{r amount-distribution-default-yes, fig.cap = "Amount range for loans that have defaulted"}
+credit %>% filter(default == "yes") %>% select (amount) %>% summary(credit$amount) 
+```
+
+- loans successfully paid out:  
+
+```{r}
+credit %>% filter(default == "no") %>% select (amount) %>% summary(credit$amount)
+```
+
+
+Let's see the distribution of the number of months for a loan based on default status:  
+
+```{r loan-duration-distribution-by-default-status, fig.cap = "Loan duration by default status"}
+credit %>% ggplot(aes(x= default, y=months_loan_duration, fill = default)) +
+  geom_boxplot() +
+  ggtitle("Loan duration by default status")
+```
+
+We see that the loans that defaulted have on average a higher duration than the loans that have been paid out.
+
+
+```{r distribution-by-age-and-default-status, fig.cap = "Applicants age distribution by loan default status "}
+credit %>% ggplot(aes(x=age, fill = default)) +
+  geom_bar(position = "dodge") +
+  ggtitle ("Age distribution by the loan default status")
+```
+
+
+
+\newpage
+
+## Step 3: Training and evaluating different models  
+
+
+
+
+### First Model: C5.0 Decision Trees Algorithm (default parameters)  
+
+
+
+Let's start by training a C5.0 decision tree model with the default parameters from the *caret* package:  
+
+```{r train-decision-trees-default, message=FALSE, warning=FALSE}
+set.seed(123, sample.kind = "Rounding")
+train_dt <- train(default ~ ., data = credit_main_train, method = "C5.0")
+```
+
+and let's see a summary of the results:  
+
+```{r}
+train_dt
+```
+
+Let's also plot these results:  
+
+```{r fig.cap="C5.0 Decision Trees Training Algorithm results"}
+ggplot(train_dt) +
+  ggtitle("C5.0 Decision Trees Algorithm")
+```
+
+To see the resulting tree let's access the finalModel:  
+
+```{r}
+train_dt$finalModel
+```
+
+
+We can see that the average tree size is 66 and the number of boosting iterations used was 20. We also see that the number of predictors used are 35 now. Let's list these predictors:  
+
+```{r}
+train_dt$finalModel$predictors
+```
+
+And let's see the importance of each of these predictors:  
+
+```{r}
+varImp(train_dt$finalModel)
+```
+
+
+We can see that the most often used predictors are *checking_balance unknown*, *savings_balance unknown*, *credit_history perfect*, *amount* and *months_loan_duration* and *purpose education*.
+
+Let's now predict and evaluate our model on the test dataset:  
+
+```{r predict-decision-trees-default}
+
+predict_dt <- predict(train_dt, credit_main_test, type = "raw")
+
+accuracy_dt <- confusionMatrix(predict_dt, 
+                               credit_main_test$default, 
+                               positive = "yes")$overall["Accuracy"]
+
+sensitivity_dt <- sensitivity(predict_dt, 
+                              credit_main_test$default, 
+                              positive = "yes")
+```
+
+
+Let's create a table with the accuracy of each of the models that we build:  
+
+```{r}
+risk_models <- data.frame(Model = "C5.0 Decision Trees (default)", 
+                          Accuracy = accuracy_dt,
+                          Sensitivity = sensitivity_dt)
+risk_models %>% kable()
+
+```
+
+We see that our Decision Trees C5.0 model has a sensitivity rate of only 48% which means that only 48% of the default loans have been predicted correctly. Our model right now still cannot be deployed in real life as this would mean that we can only correctly predict 48% of the default loans which would be very costly for the bank. We need to do better than this.  
+
+
+
+
+### Second Model: C5.0 Decision Trees Algorithm (tuned parameters)  
+
+
+
+Let's first see the parameters that can be tuned for the C5.0 model:  
+
+```{r}
+modelLookup("C5.0")
+```
+
+
+
+We already saw that the best model with the default parameters of the C5.0 model had 20 trials, no winnowing and the model type was tree.
+
+Let's create a tuning grid to optimize the *model*, *trials* and *winnow* parameters available for the C5.0 decision tree algorithm:  
+
+```{r tune-grid-decision-trees}
+tune_grid <- expand.grid(model = "tree",
+                         trials = seq(1,30, 2),
+                         winnow = FALSE)
+tune_grid
+```
+
+
+
+Also, the *trainControl()* function in the caret package controls the parameters of the train() function.  
+
+Let's tune our model by using the *trainControl()* function to create a control object (named *control*) that uses 10 fold cross-validation  
+
+```{r}
+control <- trainControl(method = "cv", number = 10)
+```
+
+
+Let's now pass these tuned parameters to the train function again:  
+
+```{r train-decision-trees-tuned, message=FALSE, warning=FALSE}
+set.seed(123, sample.kind = "Rounding")
+train_dt_tuned <- train(default ~., credit_main_train, 
+                        method = "C5.0",
+                        trControl = control,
+                        tuneGrid = tune_grid)
+
+train_dt_tuned
+```
+
+
+Let's now access the final model chosen and the best tune:  
+
+```{r}
+train_dt_tuned$finalModel
+
+```
+
+```{r}
+train_dt_tuned$bestTune
+```
+
+
+We can see that the bestTune for this model has now 17 trials compared to our default model which had 20 trials.  
+
+Also, because we are now using 10 fold cross-validation instead of the 25 bootstrapped samples, our sample size has been reduced to 728 compared to 810 in the default model. The size of the tree also dropped from 57 to 55 decisions deep.  
+
+Let's see how our new model performs  :
+
+```{r}
+predict_dt_tuned <- predict(train_dt_tuned, credit_main_test, type = "raw")
+```
+
+Let's now calculate accuracy and sensitivity for the new model:  
+
+```{r}
+accuracy_dt_tuned <- confusionMatrix(predict_dt_tuned, 
+                                     credit_main_test$default, 
+                                     positive = "yes")$overall["Accuracy"]
+sensitivity_dt_tuned <- sensitivity(predict_dt_tuned, 
+                                    credit_main_test$default, 
+                                    positive = "yes")
+
+```
+
+and let's add them to our *risk_models* table:  
+
+```{r}
+risk_models <- rbind(risk_models, list("C5.0 Decision Trees (tuned)", 
+                                       accuracy_dt_tuned, 
+                                       sensitivity_dt_tuned))
+risk_models %>% kable()
+```
+
+We see that our tuned model has managed to slightly surpass the accuracy and sensitivity of the default model. However, we still need to do better because only 51% of the defaulted loans are currently predicted correctly.
+
+
+
+
+### Third Model: Rpart Regression Trees Algorithm (tuned parameters)  
+
+
+
+If we type:  
+
+```{r}
+modelLookup("rpart")
+```
+
+we see that the only tuning parameter available is cp (complexity paramenter). Let's use cross-validation to find the best cp:  
+
+```{r train-rpart, message=FALSE, warning=FALSE}
+
+set.seed(123, sample.kind = "Rounding")
+train_rpart <- train(default ~., credit_main_train, method = "rpart",
+                     tuneGrid = data.frame(cp = seq(0, 0.5, len = 25)))
+```
+
+
+If we plot the trained model we notice that the cp that gives the highest accuracy is 0.02  
+
+```{r fig.cap="Rpart regression trees algorithm - tuned"}
+ggplot(train_rpart) + 
+  ggtitle("Rpart regression trees algorithm - tuned")
+```
+
+To see the complexity parameter that maximizes accuracy:  
+
+```{r}
+train_rpart$bestTune
+```
+
+
+Let's now see the decisions in the resulting tree:  
+
+```{r}
+train_rpart$finalModel
+```
+
+...and plot them:  
+
+```{r train-rpart-plot, fig.cap = "Rpart algorithm - final model", fig.height= 10}
+plot(train_rpart$finalModel, main = "Rpart algorithm results")
+text(train_rpart$finalModel, cex=0.75)
+```
+
+
+To extract the predictor names from the rpart model that we trained we can use this code below (see the references section: "Introduction to Data Science" by Rafael A. Irizarry") to see the leafs of the tree:  
+
+```{r}
+ind <- !(train_rpart$finalModel$frame$var == "<leaf>")
+tree_terms <- 
+  train_rpart$finalModel$frame$var[ind]  %>% 
+  unique()  %>% 
+  as.character()
+tree_terms
+```
+
+
+Let's see how well the final model performs  
+
+```{r predict-rpart}
+predict_rpart <- predict(train_rpart, credit_main_test, type = "raw")
+accuracy_rpart <- confusionMatrix(predict_rpart, 
+                                  credit_main_test$default, 
+                                  positive = "yes")$overall["Accuracy"]
+sensitivity_rpart <- sensitivity(predict_rpart, 
+                                 credit_main_test$default, 
+                                 positive = "yes")
+
+```
+
+
+Let's add these to our risk_models table:  
+
+```{r}
+risk_models <- rbind(risk_models, list("Rpart Regression Trees (tuned)", 
+                                       accuracy_rpart, 
+                                       sensitivity_rpart))
+risk_models %>% kable()
+```
+
+With this algorithm we can see a slight increase in accuracy but a lower sensitivity which means that we have managed to correctly predict 48% of the defaulted loans. Can we do better?  
+
+
+
+### Fourth Model: Random Forests (default parameters)  
+
+
+
+Let's use the caret package implementation of random forests algorithm with default parameters
+
+```{r train-random-forests-default, message=FALSE, warning=FALSE}
+set.seed(123, sample.kind = "Rounding")
+train_rf <- train(default ~., credit_main_train, method = "rf")
+train_rf
+```
+
+Let's plot the results:  
+
+```{r train-random-forests, fig.cap = "Random forests - default"}
+ggplot(train_rf, highlight = TRUE) +
+  ggtitle("Random forests algorithm - default parameters")
+```
+
+And let's now see the final model:  
+
+```{r}
+train_rf$finalModel
+```
+
+
+To find out the importance of each feature we can use again the *varImp* function from the caret package:  
+```{r}
+varImp(train_rf)
+```
+
+
+And we can see which features are used the most by plotting the variable importance:  
+
+```{r fig.cap = "Variable importance in Random Forests algorithm"}
+ggplot(varImp(train_rf)) +
+  ggtitle("Variable importance in the Random Forests algorithm")
+```
+
+
+Let's now see our best tune:  
+
+```{r}
+train_rf$bestTune
+```
+
+
+And let's see how this model performs on the test data:  
+
+```{r}
+predict_rf <- predict(train_rf, credit_main_test, type = "raw")
+```
+
+Let's calculate the accuracy and sensitivity of our new model:  
+
+```{r}
+accuracy_rf <- confusionMatrix(predict_rf, 
+                               credit_main_test$default, 
+                               positive = "yes")$overall["Accuracy"]
+sensitivity_rf <- sensitivity(predict_rf, 
+                              credit_main_test$default, 
+                              positive = "yes")
+```
+
+
+Let's add these to our risk_models table for an easy comparison:  
+
+```{r}
+risk_models <- rbind(risk_models, list("Random Forests (default)", accuracy_rf, sensitivity_rf))
+risk_models %>% kable()
+```
+
+
+We can now see an improvement in sensitivity despite the fact that our overall accuracy is slightly lower than our previous model. However, this time we are correctly predicting 52% of the defaulted loans. Let's see if we can improve our Random Forests model by tuning the parameters.  
+
+
+
+
+
+### Fifth Model: Random Forests (tuned parameters)  
+
+
+
+
+
+
+#### Option 1: Tuning the *mtry* parameter only 
+
+
+If we type:  
+
+```{r}
+modelLookup("rf") 
+```
+
+we see that the only parameter we can tune in the train function for random forests in the caret package is *mtry*  
+
+Let's set the seed first and tune the mtry parameter:  
+
+```{r message=FALSE, warning=FALSE}
+set.seed(123, sample.kind = "Rounding")
+mtry_grid <- expand.grid(mtry = c(15,18,22,25))
+train_rf_tuned <- train(default ~ ., credit_main_train, 
+                        method = "rf",
+                        tuneGrid = mtry_grid)
+
+```
+
+This time, the mtry chosen is 15:  
+
+```{r}
+train_rf_tuned$bestTune
+```
+
+
+```{r}
+train_rf_tuned
+```
+
+Let's see the performance with the tuned model:  
+
+```{r}
+predict_rf_tuned <- predict(train_rf_tuned, credit_main_test, type = "raw")
+```
+
+
+Let's calculate the accuracy and sensitivity of our new model:  
+
+```{r}
+accuracy_rf_tuned <- confusionMatrix(predict_rf_tuned, 
+                                     credit_main_test$default, 
+                                     positive = "yes")$overall["Accuracy"]
+sensitivity_rf_tuned <- sensitivity(predict_rf_tuned, 
+                                    credit_main_test$default, 
+                                    positive = "yes")
+
+```
+
+Let's add these to our risk_models table for an easy comparison:  
+
+```{r}
+risk_models <- rbind(risk_models, list("Random Forests (tuned)", 
+                                       accuracy_rf_tuned, 
+                                       sensitivity_rf_tuned))
+risk_models %>% kable()
+```
+
+We now obtain a higher accuracy than the previous default model but our sensitivity has dropped. Furthermore, this tuned model performs exactly the same as the Rpart tuned model. Let's now try to optimize our parameter tuning to see if we can do better.  
+
+
+#### Option 2: Optimizing parameter tuning  
+
+
+Let's set the seed again:  
+
+```{r message=FALSE, warning=FALSE}
+set.seed(123, sample.kind = "Rounding")
+```
+
+
+We saw that in the previous random forest model the mtry used was 15 for the final model with the best accuracy. Since in the caret package the only parameter that we can tune is mtry, let's use the *randomForest()* function from the randomForest package instead where we can also tune the minimum number of data points in the nodes of the tree. The higher this number the smoother our estimate can be.  
+
+Let's use the caret package to optimize this minimum node size. We'll create a function to calculate the accuracy (reference "Introduction to Data Science" by Rafael A. Irizarry):  
+
+```{r message=FALSE, warning=FALSE}
+node_size <- seq(1,50,10)
+
+accuracy_nodes <- sapply(node_size, function(n){
+  train(default ~., credit_main_train,
+        method = "rf",
+        tuneGrid = data.frame(mtry= 15),
+        nodesize = node_size)$results$Accuracy
+})
+
+qplot(node_size, accuracy_nodes)
+```
+
+We can see the node size for the highest accuracy:  
+
+
+```{r}
+node_size[which.max(accuracy_nodes)]
+```
+
+Let's now apply the optimized node size to the train model:  
+
+```{r message=FALSE, warning=FALSE}
+set.seed(123, sample.kind = "Rounding")
+train_rf_optz <- randomForest(default ~., 
+                              credit_main_train,
+                              nodesize = node_size[which.max(accuracy_nodes)])
+
+train_rf_optz
+
+```
+
+
+Let's plot the results:  
+
+```{r train-rf-optimized-plot, fig.cap= "Random Forests model with optimized parameters"}
+plot(train_rf_optz)
+```
+
+
+Let's see how well it performs on the test data set:  
+
+```{r}
+predict_rf_optz <- predict(train_rf_optz, credit_main_test)
+accuracy_rf_optz <- confusionMatrix(predict_rf_optz, 
+                                    credit_main_test$default, 
+                                    positive = "yes")$overall["Accuracy"]
+sensitivity_rf_optz <- sensitivity(predict_rf_optz, 
+                                   credit_main_test$default, 
+                                   positive = "yes")
+```
+
+Let's add these results to our *risk_models* table:  
+
+```{r}
+risk_models <- rbind(risk_models, list("Random Forests (optimized tuning)", 
+                                       accuracy_rf_optz,
+                                       sensitivity_rf_optz))
+
+risk_models %>% kable()
+```
+
+
+Given that we are interested in a model that has a high overall accuracy with the highest sensitivity the winner is the Random Forests model with default parameters. Therefore, this is the model that we'll use on the *credit_final_holdout_test* dataset.  
+
+
+\newpage
+# Results: testing our final model on the final holdout test data set  
+
+
+
+
+Let's now test our best model that we have trained so far on the final holdout test dataset that we haven't used so far: 
+
+```{r predict-final-accuracy}
+predict_final <- predict(train_rf, credit_final_holdout_test)
+accuracy_final <- confusionMatrix(predict_final, 
+                                  credit_final_holdout_test$default, 
+                                  positive = "yes")$overall["Accuracy"]
+accuracy_final
+```
+
+```{r final-sensitivity}
+
+sensitivity_final <- sensitivity(predict_final, 
+                                 credit_final_holdout_test$default, 
+                                 positive = "yes")
+sensitivity_final
+```
+
+Our model has a 78% accuracy and we have manged to accurately predict 50% of the default loans which is not impressive. Predicting loan defaults from 900 examples seems to be a more challenging task than initially anticipated.   
+
+
+
+
+# Conclusion and next steps  
+
+
+We saw that using the Random Forests algorithm with the default parameters has provided a higher sensitivity rate than any other model, allowing us to accurately predict 50% of the defaulted loans and offer an overall accuracy of 78%.   
+
+Unfortunately, the challenge of correctly predicting the default status of a loan based on only 900 examples has proven greater than anticipated. This may be either because our training dataset was not large enough to properly train our algorithms or perhaps this is a truly difficult challenge in real life.  
+
+The advantage of using the Random Forests algorithm over other black box algorithms like kNN for example consists in its transparency since the results of the model can be formulated in plain language.  
+
+Next step would be to see if using more sofisticated algorithms would produce higher accuracy and sensitivity even if this means losing the transparency provided by the Random Forests algorithm.   
+
+
+
+# References  
+
+
+- *Introduction to Data Science - Data Analysis and Prediction Algorithms with R* by Rafael A. Irizarry <http://rafalab.dfci.harvard.edu/dsbook/>  
+
+- *Machine Learning with R - Expert Techniques for Predictive Modelling* by Brett Lanz - Third Edition, Packt Publishing  <https://www.packtpub.com/product/machine-learning-with-r-third-edition/9781788295864#_ga=2.254462029.418584731.1679160506-440441526.1651888047>  
+
+- The original *german credit* dataset is available on UCI Machine Learning Repository: 
+<https://archive.ics.uci.edu/ml/datasets/statlog+(german+credit+data>
+
+- The clean *credit.csv* file with 9 attributes is available on Kaggle:  
+<https://www.kaggle.com/datasets/uciml/german-credit/download?datasetVersionNumber=1>
+
+- The clean *credit.csv* file with 16 attributes is available on GitHub: <https://raw.githubusercontent.com/PacktPublishing/Machine-Learning-with-R-Third-Edition/4075e67f7ab26034bc46a8138c08429c2c9e32e8/Chapter05/credit.csv>
+
+
+
+
+
+
+
+
+
+
